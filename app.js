@@ -28,36 +28,18 @@ function extractVideoId(url) {
   return (match && match[2].length === 11) ? match[2] : null;
 }
 
-function isPlaylist(url) {
-  return url.includes('list=');
-}
-
-async function triggerDirectFileDownload(streamUrl, filename) {
-  try {
-    showAlert(`Downloading ${filename} directly...`, 'info');
-    const response = await fetch(streamUrl);
-    if (!response.ok) throw new Error('Failed to fetch stream');
-    
-    const blob = await response.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    
-    const a = document.createElement('a');
-    a.href = blobUrl;
-    a.download = filename.endsWith('.mp3') ? filename : `${filename}.mp3`;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    
-    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
-    showAlert('Download completed and saved to your device!', 'info');
-  } catch (err) {
-    // If CORS blocks direct blob fetch, fallback to force-download iframe or direct link without external redirect page
-    const a = document.createElement('a');
-    a.href = streamUrl;
-    a.setAttribute('download', filename);
-    a.target = '_blank';
-    a.click();
-  }
+function triggerDirectFileDownload(streamUrl, filename) {
+  // Use same-origin proxy endpoint to bypass CORS and force native PC download
+  const proxyDownloadUrl = `/api/proxy-download?url=${encodeURIComponent(streamUrl)}&filename=${encodeURIComponent(filename)}`;
+  
+  const a = document.createElement('a');
+  a.href = proxyDownloadUrl;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  
+  showAlert('Downloading MP3 directly to your device...', 'info');
 }
 
 async function handleConvert() {
@@ -77,32 +59,36 @@ async function handleConvert() {
   try {
     showAlert('Extracting audio stream... Please wait.', 'info');
 
-    // Fetch stream metadata via serverless Cobalt endpoint
-    const response = await fetch('https://api.cobalt.tools/api/json', {
+    // Call Cloudflare Worker endpoint
+    const response = await fetch('/api/extract', {
       method: 'POST',
       headers: {
-        'Accept': 'application/json',
         'Content-Type': 'application/json'
       },
       body: JSON.stringify({
         url: url,
-        isAudioOnly: true,
-        aFormat: 'mp3',
-        audioBitrate: quality
+        quality: quality
       })
+    }).catch(async () => {
+      // Fallback if testing locally on static file server
+      return await fetch('https://api.cobalt.tools/api/json', {
+        method: 'POST',
+        headers: { 'Accept': 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: url, isAudioOnly: true, aFormat: 'mp3', audioBitrate: quality })
+      });
     });
 
     const data = await response.json().catch(() => ({}));
 
-    if (!response.ok || !data.url) {
-      throw new Error(data.text || 'Could not extract MP3 audio stream. Please check YouTube link.');
+    if (!data.url && !data.picker) {
+      throw new Error(data.error || data.text || 'Could not extract MP3 audio. Verify YouTube link.');
     }
 
     const videoId = extractVideoId(url);
     const title = data.filename || `YouTube_Audio_${videoId || 'Track'}.mp3`;
-    const downloadUrl = data.url;
+    const streamUrl = data.url || data.picker?.[0]?.url;
 
-    renderResult(url, title, downloadUrl);
+    renderResult(url, title, streamUrl);
 
   } catch (err) {
     showAlert(err.message || 'Failed to extract MP3 audio stream.', 'error');
@@ -118,7 +104,6 @@ function renderResult(originalUrl, title, streamUrl) {
 
   const videoId = extractVideoId(originalUrl);
   const thumbUrl = videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=100&auto=format&fit=crop&q=60';
-
   const cardId = `item-${Date.now()}`;
 
   const cardHtml = `
@@ -136,13 +121,12 @@ function renderResult(originalUrl, title, streamUrl) {
 
   els.downloadList.insertAdjacentHTML('afterbegin', cardHtml);
 
-  // Attach click listener for direct local PC file auto-save
   document.querySelector(`#${cardId} .direct-dl-btn`).addEventListener('click', function() {
     const url = this.getAttribute('data-url');
     const filename = this.getAttribute('data-title');
     triggerDirectFileDownload(url, filename);
   });
 
-  // Auto trigger download immediately
+  // Auto trigger download
   triggerDirectFileDownload(streamUrl, title);
 }
