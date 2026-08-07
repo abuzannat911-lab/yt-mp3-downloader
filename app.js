@@ -1,8 +1,3 @@
-const API_ENDPOINTS = [
-  'https://api.cobalt.tools/api/json',
-  'https://co.wuk.sh/api/json'
-];
-
 const els = {
   urlInput: document.getElementById('urlInput'),
   convertBtn: document.getElementById('convertBtn'),
@@ -37,6 +32,34 @@ function isPlaylist(url) {
   return url.includes('list=');
 }
 
+async function triggerDirectFileDownload(streamUrl, filename) {
+  try {
+    showAlert(`Downloading ${filename} directly...`, 'info');
+    const response = await fetch(streamUrl);
+    if (!response.ok) throw new Error('Failed to fetch stream');
+    
+    const blob = await response.blob();
+    const blobUrl = URL.createObjectURL(blob);
+    
+    const a = document.createElement('a');
+    a.href = blobUrl;
+    a.download = filename.endsWith('.mp3') ? filename : `${filename}.mp3`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    
+    setTimeout(() => URL.revokeObjectURL(blobUrl), 10000);
+    showAlert('Download completed and saved to your device!', 'info');
+  } catch (err) {
+    // If CORS blocks direct blob fetch, fallback to force-download iframe or direct link without external redirect page
+    const a = document.createElement('a');
+    a.href = streamUrl;
+    a.setAttribute('download', filename);
+    a.target = '_blank';
+    a.click();
+  }
+}
+
 async function handleConvert() {
   const url = els.urlInput.value.trim();
   if (!url) {
@@ -47,65 +70,42 @@ async function handleConvert() {
   const quality = els.qualitySelect.value;
   hideAlert();
   
-  // Set loading state
   els.convertBtn.disabled = true;
-  els.convertBtn.querySelector('.btn-text').textContent = 'Processing...';
+  els.convertBtn.querySelector('.btn-text').textContent = 'Extracting MP3...';
   els.convertBtn.querySelector('.spinner').classList.remove('hidden');
 
   try {
-    if (isPlaylist(url)) {
-      showAlert('Extracting playlist tracks... Please wait.', 'info');
-    } else {
-      showAlert('Fetching MP3 audio stream...', 'info');
+    showAlert('Extracting audio stream... Please wait.', 'info');
+
+    // Fetch stream metadata via serverless Cobalt endpoint
+    const response = await fetch('https://api.cobalt.tools/api/json', {
+      method: 'POST',
+      headers: {
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        url: url,
+        isAudioOnly: true,
+        aFormat: 'mp3',
+        audioBitrate: quality
+      })
+    });
+
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || !data.url) {
+      throw new Error(data.text || 'Could not extract MP3 audio stream. Please check YouTube link.');
     }
 
-    let downloadData = null;
-    let lastError = null;
+    const videoId = extractVideoId(url);
+    const title = data.filename || `YouTube_Audio_${videoId || 'Track'}.mp3`;
+    const downloadUrl = data.url;
 
-    // Call public API endpoint with audio conversion payload
-    for (const endpoint of API_ENDPOINTS) {
-      try {
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({
-            url: url,
-            isAudioOnly: true,
-            aFormat: 'mp3',
-            audioBitrate: quality
-          })
-        });
-
-        if (response.ok) {
-          downloadData = await response.json();
-          break;
-        }
-      } catch (e) {
-        lastError = e;
-      }
-    }
-
-    if (!downloadData) {
-      const videoId = extractVideoId(url);
-      if (videoId) {
-        downloadData = {
-          status: 'stream',
-          url: `https://y2mate.is/en/v1/download?v=${videoId}&format=mp3`,
-          title: `YouTube Video Audio (${videoId})`
-        };
-      } else {
-        throw new Error('Could not process YouTube link. Please verify the URL.');
-      }
-    }
-
-    renderResult(url, downloadData);
-    showAlert('MP3 Download link generated successfully!', 'info');
+    renderResult(url, title, downloadUrl);
 
   } catch (err) {
-    showAlert(err.message || 'Failed to extract MP3. Try another link.', 'error');
+    showAlert(err.message || 'Failed to extract MP3 audio stream.', 'error');
   } finally {
     els.convertBtn.disabled = false;
     els.convertBtn.querySelector('.btn-text').textContent = 'Extract MP3';
@@ -113,25 +113,36 @@ async function handleConvert() {
   }
 }
 
-function renderResult(originalUrl, data) {
+function renderResult(originalUrl, title, streamUrl) {
   els.resultsSection.classList.remove('hidden');
 
   const videoId = extractVideoId(originalUrl);
   const thumbUrl = videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : 'https://images.unsplash.com/photo-1511671782779-c97d3d27a1d4?w=100&auto=format&fit=crop&q=60';
-  const downloadUrl = data.url || data.picker?.[0]?.url || originalUrl;
+
+  const cardId = `item-${Date.now()}`;
 
   const cardHtml = `
-    <div class="item-card">
+    <div class="item-card" id="${cardId}">
       <img class="item-thumb" src="${thumbUrl}" alt="Thumbnail">
       <div class="item-info">
-        <div class="item-title">${data.filename || data.title || 'YouTube Audio MP3'}</div>
+        <div class="item-title">${title}</div>
         <div class="item-meta">Format: MP3 • ${els.qualitySelect.value} kbps</div>
       </div>
-      <a href="${downloadUrl}" target="_blank" rel="noopener noreferrer" download class="dl-btn">
-        Download MP3
-      </a>
+      <button class="dl-btn direct-dl-btn" data-url="${streamUrl}" data-title="${title}">
+        Save MP3 to PC
+      </button>
     </div>
   `;
 
   els.downloadList.insertAdjacentHTML('afterbegin', cardHtml);
+
+  // Attach click listener for direct local PC file auto-save
+  document.querySelector(`#${cardId} .direct-dl-btn`).addEventListener('click', function() {
+    const url = this.getAttribute('data-url');
+    const filename = this.getAttribute('data-title');
+    triggerDirectFileDownload(url, filename);
+  });
+
+  // Auto trigger download immediately
+  triggerDirectFileDownload(streamUrl, title);
 }
