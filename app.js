@@ -89,13 +89,12 @@ async function handleConvert() {
     }
 
     if (!downloadData) {
-      // Fallback serverless proxy download URL generation
       const videoId = extractVideoId(url);
       if (videoId) {
         downloadData = {
           status: 'stream',
-          url: `https://www me.y2mate.is/download?v=${videoId}`, // secondary direct link format
-          title: `YouTube Video (${videoId})`
+          url: `https://y2mate.is/en/v1/download?v=${videoId}&format=mp3`,
+          title: `YouTube Video Audio (${videoId})`
         };
       } else {
         throw new Error('Could not process YouTube link. Please verify the URL.');
